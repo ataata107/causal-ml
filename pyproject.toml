@@ -1,0 +1,18 @@
+[project]
+name = "dcc-uplift"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.109.2",
+    "causalml>=0.16.0",
+    "numpy>=2.4.6",
+    "openai>=2.41.1",
+    "pandas>=3.0.3",
+    "plotly>=6.8.0",
+    "scikit-learn>=1.9.0",
+    "shap>=0.51.0",
+    "streamlit>=1.58.0",
+    "xgboost>=3.2.0",
+]
