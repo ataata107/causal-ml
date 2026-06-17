@@ -136,6 +136,77 @@ def get_statistics(df: pd.DataFrame) -> dict:
     }
 
 
+def generate_rct_data(n: int = N, seed: int = SEED) -> pd.DataFrame:
+    """Same DGP as generate_dcc_data but treatment is randomly assigned (50/50).
+    Breaks the device→treatment backdoor path — T is now independent of W."""
+    rng = np.random.default_rng(seed + 1)
+
+    device = rng.choice(["mobile", "desktop"], size=n, p=[0.60, 0.40])
+    is_mobile = (device == "mobile").astype(int)
+
+    country = rng.choice(
+        ["US", "UK", "DE", "JP", "IN", "BR"],
+        size=n,
+        p=[0.30, 0.15, 0.15, 0.15, 0.15, 0.10],
+    )
+    basket_value = rng.lognormal(mean=3.5, sigma=0.8, size=n).clip(5, 500)
+    account_age_days = rng.integers(1, 3650, size=n)
+    fx_volatility = rng.uniform(0.01, 0.25, size=n)
+
+    # Random assignment — treatment is independent of device
+    treatment = rng.binomial(1, 0.5, size=n)
+
+    base_rate = np.where(is_mobile, 0.12, 0.35)
+    unfamiliar = np.isin(country, ["JP", "IN", "BR"]).astype(float) * 0.04
+    high_basket = (basket_value > 100).astype(float) * 0.03
+    causal_effect = 0.08 + unfamiliar + high_basket
+
+    p_y1 = (base_rate + causal_effect).clip(0, 1)
+    p_y0 = base_rate.clip(0, 1)
+
+    y1 = rng.binomial(1, p_y1, size=n)
+    y0 = rng.binomial(1, p_y0, size=n)
+    outcome = np.where(treatment == 1, y1, y0)
+
+    return pd.DataFrame({
+        "customer_id": np.arange(n),
+        "device": device,
+        "country": country,
+        "basket_value": basket_value.round(2),
+        "account_age_days": account_age_days,
+        "fx_volatility": fx_volatility.round(4),
+        "treatment": treatment,
+        "outcome": outcome,
+        "_y1": y1,
+        "_y0": y0,
+        "_ite": y1 - y0,
+    })
+
+
+def get_rct_statistics(df_rct: pd.DataFrame) -> dict:
+    """Stats for the RCT dataset — naive estimate is now unbiased."""
+    y_t1 = df_rct.loc[df_rct.treatment == 1, "outcome"].mean()
+    y_t0 = df_rct.loc[df_rct.treatment == 0, "outcome"].mean()
+    naive_ate = y_t1 - y_t0
+    true_ate = (df_rct["_y1"] - df_rct["_y0"]).mean()
+
+    strata = {}
+    for dev in ["mobile", "desktop"]:
+        sub = df_rct[df_rct.device == dev]
+        strata[dev] = {
+            "n": len(sub),
+            "pct_treatment": sub.treatment.mean(),
+            "conversion_treated": sub.loc[sub.treatment == 1, "outcome"].mean(),
+            "conversion_control": sub.loc[sub.treatment == 0, "outcome"].mean(),
+        }
+
+    return {
+        "naive_ate": naive_ate,
+        "true_ate": true_ate,
+        "strata": strata,
+    }
+
+
 if __name__ == "__main__":
     df = generate_dcc_data()
     stats = get_statistics(df)

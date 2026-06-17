@@ -6,7 +6,7 @@ A single-page narrative walkthrough — grounded in Brady Neal slides 5–8.
 import streamlit as st
 import pandas as pd
 
-from data import generate_dcc_data, get_statistics
+from data import generate_dcc_data, get_statistics, generate_rct_data, get_rct_statistics
 
 st.set_page_config(
     page_title="Simpson's Paradox · Amazon DCC",
@@ -20,7 +20,14 @@ def load():
     stats = get_statistics(df)
     return df, stats
 
+@st.cache_data
+def load_rct():
+    df_rct = generate_rct_data()
+    rct_stats = get_rct_statistics(df_rct)
+    return df_rct, rct_stats
+
 df, stats = load()
+df_rct, rct_stats = load_rct()
 
 mobile  = stats["strata"]["mobile"]
 desktop = stats["strata"]["desktop"]
@@ -194,6 +201,170 @@ col2.metric(
 )
 
 st.divider()
+
+# ── Step 5: RCT Solution ──────────────────────────────────────────────────────
+st.header("Step 5 — Solution 1: Run a Randomized Controlled Trial (RCT)")
+
+st.markdown("""
+The root problem was that **device type determined who got treated**.
+Mobile users were 8× more likely to see the DCC offer than desktop users.
+
+An RCT breaks this link by **randomly assigning** treatment — flip a coin for each
+customer, regardless of their device. Now the treatment group and control group
+have the same mix of mobile and desktop users, so device type can't confound the result.
+""")
+
+rct_mob = rct_stats["strata"]["mobile"]
+rct_desk = rct_stats["strata"]["desktop"]
+
+st.markdown(f"""
+<table class="bt">
+  <thead>
+    <tr>
+      <th></th>
+      <th>Mobile</th>
+      <th>Desktop</th>
+      <th class="total">% Mobile in group</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="lbl">Shown DCC offer (T=1)</td>
+      <td>{rct_mob['conversion_treated']:.1%}</td>
+      <td>{rct_desk['conversion_treated']:.1%}</td>
+      <td class="total">{rct_mob['n'] * rct_mob['pct_treatment'] / (rct_mob['n'] * rct_mob['pct_treatment'] + rct_desk['n'] * rct_desk['pct_treatment']):.0%} mobile</td>
+    </tr>
+    <tr>
+      <td class="lbl">Not shown DCC offer (T=0)</td>
+      <td>{rct_mob['conversion_control']:.1%}</td>
+      <td>{rct_desk['conversion_control']:.1%}</td>
+      <td class="total">{rct_mob['n'] * (1 - rct_mob['pct_treatment']) / (rct_mob['n'] * (1 - rct_mob['pct_treatment']) + rct_desk['n'] * (1 - rct_desk['pct_treatment'])):.0%} mobile</td>
+    </tr>
+  </tbody>
+</table>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+Both groups are now ~60% mobile / 40% desktop — the same population mix.
+The low-converting mobile users are spread **equally** across treatment and control,
+so they no longer drag down only one side.
+""")
+
+col1, col2, col3 = st.columns(3)
+col1.metric("RCT estimate E[Y|T=1] − E[Y|T=0]", f"{rct_stats['naive_ate']:+.1%}", delta="unbiased")
+col2.metric("True ATE (ground truth)", f"{rct_stats['true_ate']:+.1%}")
+col3.metric("Gap (bias)", f"{rct_stats['naive_ate'] - rct_stats['true_ate']:+.1%}", delta="near zero")
+
+st.success(
+    "With randomization, **E[Y | T=1] − E[Y | T=0] = E[Y(1)] − E[Y(0)]** — "
+    "the observational difference equals the causal effect because "
+    "treatment is independent of all confounders by design."
+)
+
+st.markdown("""
+**Why this works (the math):**
+
+When treatment T is randomized, T is independent of device W.
+So within T=1, the distribution of W matches the overall population — same as T=0.
+The composition effect disappears, and the naive difference becomes causal.
+""")
+
+st.divider()
+
+# ── Step 6: Backdoor Adjustment ───────────────────────────────────────────────
+st.header("Step 6 — Solution 2: Backdoor Adjustment (no RCT needed)")
+
+st.markdown("""
+RCTs are expensive and sometimes impossible. What if we're stuck with the original
+observational data where mobile users were shown DCC offers more often?
+
+The **backdoor adjustment formula** lets us recover the true causal effect from
+observational data — as long as we've measured the confounders.
+
+The formula is:
+
+$$E[Y(t)] = \\sum_w P(W = w) \\cdot E[Y \\mid T = t,\\, W = w]$$
+
+Instead of using the treatment group's device mix (which is distorted), we
+re-weight using the **population's** device mix.
+""")
+
+st.markdown("**Step-by-step calculation on our data:**")
+
+w_mobile  = (df["device"] == "mobile").mean()
+w_desktop = (df["device"] == "desktop").mean()
+
+mob_t1 = mobile["conversion_treated"]
+mob_t0 = mobile["conversion_control"]
+desk_t1 = desktop["conversion_treated"]
+desk_t0 = desktop["conversion_control"]
+
+ey1_adj = w_mobile * mob_t1 + w_desktop * desk_t1
+ey0_adj = w_mobile * mob_t0 + w_desktop * desk_t0
+backdoor_ate = ey1_adj - ey0_adj
+
+steps_df = pd.DataFrame({
+    "": [
+        "Population weight P(W=w)",
+        "E[Y | T=1, W=w]",
+        "E[Y | T=0, W=w]",
+        "Weighted contribution to E[Y(1)]",
+        "Weighted contribution to E[Y(0)]",
+    ],
+    "Mobile (W=mobile)": [
+        f"{w_mobile:.0%}",
+        f"{mob_t1:.1%}",
+        f"{mob_t0:.1%}",
+        f"{w_mobile:.0%} × {mob_t1:.1%} = {w_mobile * mob_t1:.1%}",
+        f"{w_mobile:.0%} × {mob_t0:.1%} = {w_mobile * mob_t0:.1%}",
+    ],
+    "Desktop (W=desktop)": [
+        f"{w_desktop:.0%}",
+        f"{desk_t1:.1%}",
+        f"{desk_t0:.1%}",
+        f"{w_desktop:.0%} × {desk_t1:.1%} = {w_desktop * desk_t1:.1%}",
+        f"{w_desktop:.0%} × {desk_t0:.1%} = {w_desktop * desk_t0:.1%}",
+    ],
+})
+st.table(steps_df)
+
+st.markdown(f"""
+$$E[Y(1)] = {w_mobile:.0%} \\times {mob_t1:.1%} + {w_desktop:.0%} \\times {desk_t1:.1%} = {ey1_adj:.1%}$$
+
+$$E[Y(0)] = {w_mobile:.0%} \\times {mob_t0:.1%} + {w_desktop:.0%} \\times {desk_t0:.1%} = {ey0_adj:.1%}$$
+
+$$\\text{{ATE}} = E[Y(1)] - E[Y(0)] = {ey1_adj:.1%} - {ey0_adj:.1%} = {backdoor_ate:+.1%}$$
+""")
+
+st.divider()
+st.subheader("All three estimates side by side")
+
+col1, col2, col3 = st.columns(3)
+col1.metric(
+    "Naive E[Y|T=1] − E[Y|T=0]",
+    f"{stats['naive_ate']:+.1%}",
+    delta="confounded — wrong sign",
+    delta_color="inverse",
+)
+col2.metric(
+    "Backdoor adjusted ATE",
+    f"{backdoor_ate:+.1%}",
+    delta="causal — correct",
+)
+col3.metric(
+    "True ATE (ground truth)",
+    f"{stats['true_ate']:+.1%}",
+    delta="sim only",
+)
+
+st.info("""
+**Key insight:** The naive estimate was negative because the treatment group
+was flooded with low-converting mobile users. The backdoor adjustment uses
+the *population* device mix instead of the *treatment group* device mix —
+giving each subgroup its fair weight and recovering the true causal effect.
+""")
+
+st.divider()
 st.caption(
-    "Based on Brady Neal — *A Brief Introduction to Causal Inference*, Lecture 1 · Slides 5–8"
+    "Based on Brady Neal — *A Brief Introduction to Causal Inference*, Lecture 1 · Slides 5–25"
 )
